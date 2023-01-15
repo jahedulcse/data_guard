@@ -1,11 +1,14 @@
 ======== On primary ===========
-
 select name, open_mode, database_role from v$database;
 select thread#, max(sequence#) "Last Primary Seq Generated" from v$archived_log val, v$database vdb 
 where val.resetlogs_change# = vdb.resetlogs_change# group by thread# order by 1;
 
 ========== On Standby ===============
-
 select name, open_mode, database_role from v$database;
 select thread#, max(sequence#) "Last Standby Seq Applied" from v$archived_log val, v$database vdb 
 where val.resetlogs_change# = vdb.resetlogs_change# and val.applied in ('YES','IN-MEMORY') group by thread# order by 1;
+------
+select max(sequence#) from v$log_history;
+SELECT THREAD# "Thread",SEQUENCE# "Last Sequence Generated" FROM V$ARCHIVED_LOG
+WHERE (THREAD#,FIRST_TIME ) IN (SELECT THREAD#,MAX(FIRST_TIME) FROM V$ARCHIVED_LOG GROUP BY THREAD#) ORDER BY 1;
+SELECT THREAD#, LOW_SEQUENCE#, HIGH_SEQUENCE# FROM V$ARCHIVE_GAP;
