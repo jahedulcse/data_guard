@@ -1,2 +1,2 @@
-# data_guard
+# data-guard
 Data Guard Practice Scripts
