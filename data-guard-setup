@@ -1,0 +1,501 @@
+
+Data gurard configuration------------------------
+---------------------------
+
+Prerequisites
+✅ Primary and Standby Servers: Ensure both databases have the same Oracle version and OS.
+✅ Networking: Both servers should be able to communicate over the network (using static IP or DNS).
+✅ Disk Space: Ensure sufficient space on the standby server for datafile storage.
+✅ Archive Mode: The primary database must be in ARCHIVELOG mode.
+
+-------Correct Naming Convention for Data Guard (Primary & Standby)
+
+Parameter		Primary (fooddb server)	Standby (fooddrdb server)
+DB_NAME			fooddb					fooddb (same as primary)
+DB_UNIQUE_NAME	fooddb					fooddrdb (must be unique)
+INSTANCE_NAME	fooddb					fooddrdb (same as unique name)
+SERVICE_NAMES	fooddb					fooddrdb (must be unique)
+GLOBAL_DB_NAME	fooddb					fooddb (same as primary)
+SID				fooddb					fooddrdb (same as unique name)
+------------------------------------
+
+1.1 Enable Archive Log Mode & Force Logging
+Log in to the primary database as sysdba:
+----
+ALTER DATABASE FORCE LOGGING;
+SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE FLASHBACK ON;
+ALTER DATABASE OPEN;
+
+1.2 Configure Primary Database Parameters
+------
+ALTER SYSTEM SET DB_UNIQUE_NAME='fooddb' SCOPE=SPFILE;
+ALTER SYSTEM SET LOG_ARCHIVE_CONFIG='DG_CONFIG=(fooddb,fooddrdb)' SCOPE=BOTH;
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=USE_DB_RECOVERY_FILE_DEST VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=fooddb' SCOPE=BOTH;
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=fooddrdb ASYNC VALID_FOR=(ONLINE_LOGFILES,PRIMARY_ROLE) DB_UNIQUE_NAME=fooddrdb' SCOPE=BOTH;
+ALTER SYSTEM SET LOG_ARCHIVE_FORMAT='%t_%s_%r.arc' SCOPE=SPFILE;
+ALTER SYSTEM SET LOG_ARCHIVE_MAX_PROCESSES=4 SCOPE=BOTH;
+ALTER SYSTEM SET FAL_SERVER=fooddrdb SCOPE=BOTH;
+ALTER SYSTEM SET FAL_CLIENT=fooddb SCOPE=BOTH;
+ALTER SYSTEM SET DB_FILE_NAME_CONVERT='/u01/app/oracle/oradata/FOODDB/','/u01/app/oracle/oradata/FOODDRDB/' SCOPE=SPFILE;
+ALTER SYSTEM SET LOG_FILE_NAME_CONVERT='/u01/app/oracle/oradata/FOODDB/','/u01/app/oracle/oradata/FOODDRDB/' SCOPE=SPFILE;
+ALTER SYSTEM SET STANDBY_FILE_MANAGEMENT=AUTO SCOPE=BOTH;
+ALTER SYSTEM SET REMOTE_LOGIN_PASSWORDFILE=EXCLUSIVE SCOPE=SPFILE;
+
+1.3 Create Standby Redo Logs (SRLs) 
+On the primary, create one more SRL group than online redo logs:
+-------
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo04.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 5 ('/u01/app/oracle/oradata/fooddb/redo05.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo06.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 5 ('/u01/app/oracle/oradata/fooddb/redo07.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo08.log') SIZE 256M;
+
+
+Restart the primary database:
+------
+SHUTDOWN IMMEDIATE;
+STARTUP;
+
+
+ 1.4 Create a Standby Control File
+ **May not needed because backup control file using rman backup but also can backup by this
+ ----
+ ALTER DATABASE CREATE STANDBY CONTROLFILE AS '/u01/backup/standby_control.ctl';
+ 
+ 1.5 Create an RMAN Backup of the Primary
+Take a full RMAN backup of the primary database:
+-----------------
+RUN {
+  BACKUP DATABASE FORMAT '/u01/backup/fooddb_%U.bkp' TAG 'STANDBY_SETUP';
+  BACKUP CURRENT CONTROLFILE FOR STANDBY FORMAT '/u01/backup/standby_control.ctl';
+  BACKUP ARCHIVELOG ALL FORMAT '/u01/backup/arch_%U.bkp';
+}
+
+ 
+ 1.6 Create Password File
+ -------
+ orapwd file=$ORACLE_HOME/dbs/orapwfooddb password=YourPassword entries=10
+ ---OR, orapwd FILE=$ORACLE_HOME/dbs/orapwfooddb FORCE=Y FORMAT=12 PASSWORD=YourSysPassword
+ **May not needed. We can direct password file copy from primary to standby
+ 
+
+2. Configure Standby Database
+======================================================
+------------
+2.1 copy the password file, standby control file and rman backup files to standby from primary:
+----
+scp primary:/u01/backup/standby_control.ctl /u01/app/oracle/oradata/fooddrdb/control01.ctl
+scp primary:$ORACLE_HOME/dbs/orapwfooddb $ORACLE_HOME/dbs/orapwfooddrdb
+
+scp primary:/u01/backup/* /u01/backup/
+
+
+2.2 Set Initialization Parameters
+Create a PFILE for the standby database:
+-----
+vi /u01/app/oracle/product/19.0.0/dbhome_1/dbs/initfooddrdb.ora
+
+DB_NAME=fooddb
+DB_UNIQUE_NAME=fooddrdb
+CONTROL_FILES='/u01/app/oracle/oradata/fooddrdb/control01.ctl','/u01/app/oracle/oradata/fooddrdb/control02.ctl'
+LOG_ARCHIVE_CONFIG='DG_CONFIG=(fooddb,fooddrdb)'
+LOG_ARCHIVE_DEST_1='LOCATION=/u01/app/oracle/recovery_area/'
+---OR,LOG_ARCHIVE_DEST_1='LOCATION=USE_DB_RECOVERY_FILE_DEST' --- it's better to use FRA by using this
+LOG_ARCHIVE_DEST_2='SERVICE=fooddb ASYNC VALID_FOR=(ONLINE_LOGFILES,STANDBY_ROLE) DB_UNIQUE_NAME=fooddb'
+STANDBY_FILE_MANAGEMENT=AUTO
+DB_FILE_NAME_CONVERT='/u01/app/oracle/oradata/fooddb','/u01/app/oracle/oradata/fooddrdb'
+---OR, DB_FILE_NAME_CONVERT=fooddb, fooddrdb
+LOG_FILE_NAME_CONVERT='/u01/app/oracle/oradata/fooddb','/u01/app/oracle/oradata/fooddrdb'
+---OR, LOG_FILE_NAME_CONVERT=fooddb, fooddrdb
+--- Highly recommended to use full path
+
+--- Risky Approach (Database Name Only)
+ALTER SYSTEM SET DB_FILE_NAME_CONVERT='fooddb','fooddrdb' SCOPE=SPFILE;
+----
+This works only if the datafiles are stored under paths that contain the exact database name.
+If your directory paths do not follow this pattern, it might not work correctly.
+
+2.3 Start the Standby Database in NOMOUNT Mode
+---
+export ORACLE_SID=fooddrdb
+
+STARTUP NOMOUNT PFILE='/u01/app/oracle/product/19.0.0/dbhome_1/dbs/initfooddrdb.ora';
+
+2.4 Restore Standby Control File and database mount
+--------
+rman
+
+CONNECT TARGET /
+RESTORE STANDBY CONTROLFILE FROM '/u01/backup/standby_control.ctl';
+
+ALTER DATABASE MOUNT;
+
+2.5 Restore RMAN Backup on the Standby
+Now, restore the primary backup on the standby:
+------
+RUN {
+  RESTORE DATABASE;
+  RECOVER DATABASE;
+}
+
+----------------
+3. Configure Network (TNS)
+On both primary and standby, edit $ORACLE_HOME/network/admin/tnsnames.ora:
+-----------
+vi $ORACLE_HOME/network/admin/tnsnames.ora
+
+===================== IN primary
+----------
+FOODDB =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.90.137)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = fooddb)
+    )
+  )
+  
+  LISTENER_FOODDB =
+  (ADDRESS = (PROTOCOL = TCP)(HOST = fooddb02)(PORT = 1521))
+
+
+FOODDRDB =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.90.139)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = fooddrdb)
+    )
+  )
+  
+  -----
+  Test connection:
+  ----------------
+  
+  ========= IN standby-- tnsnames.ora
+  
+FOODDB =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.90.137)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = fooddb)
+    )
+  )
+
+LISTENER_FOODDRDB =
+  (ADDRESS = (PROTOCOL = TCP)(HOST = ol7)(PORT = 1521))
+
+
+
+FOODDRDB =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 192.168.90.139)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = fooddrdb)
+    )
+  )
+  
+lsnrctl reload
+  
+tnsping fooddb
+tnsping fooddrdb
+
+********** in Primary, listener.ora
+--------
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = fooddb02)(PORT = 1521))
+      (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+    )
+  )
+
+
+ADR_BASE_LISTENER = /app/oracle
+
+ENABLE_GLOBAL_DYNAMIC_ENDPOINT_LISTENER=ON              # line added by Agent
+
+SID_LIST_LISTENER =
+(SID_LIST =
+        (SID_DESC =
+                (GLOBAL_DBNAME = fooddb)
+                (SID_NAME = fooddb)
+                (ORACLE_HOME = /u01/app/oracle/product/19.0.0/dbhome_1)
+        )
+)
+
+
+============
+4. Configure Data Guard
+===============================
+------------
+4.1 Enable Managed Recovery on Standby
+On the standby database:
+-----------
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+4.2 Test Log Shipping
+On primary, force a log switch:
+-----
+ALTER SYSTEM SWITCH LOGFILE;
+OR,
+ALTER SYSTEM SWITCH ALL LOGFILE;
+
+Check if logs are applying on the standby:
+----
+SELECT SEQUENCE#, APPLIED FROM V$ARCHIVED_LOG ORDER BY SEQUENCE#;
+
+================
+-----------
+Final Checks
+=====================
+
+Check Data Guard status:
+-------
+SELECT DATABASE_ROLE, OPEN_MODE FROM V$DATABASE;
+
+Verify logs are shipping: on primary (status will be valid and ERROR is null)
+-------
+SELECT DEST_ID, STATUS, ERROR FROM V$ARCHIVE_DEST WHERE DEST_ID=2;
+SELECT DEST_ID, STATUS, ERROR FROM V$ARCHIVE_DEST WHERE DEST_ID=1;
+
+archive log list;
+
+---- On standby:
+SELECT DEST_ID, STATUS, ERROR FROM V$ARCHIVE_DEST WHERE DEST_ID=1;
+SELECT DEST_ID, STATUS, ERROR FROM V$ARCHIVE_DEST WHERE DEST_ID=2;
+
+--- verify redo apply is active
+SELECT PROCESS, STATUS, THREAD#, SEQUENCE# FROM V$MANAGED_STANDBY; (RFS will be present,MRP0=APPLYING_LOG or wait for log) with sequence#
+
+SELECT THREAD#, SEQUENCE#, APPLIED FROM V$ARCHIVED_LOG ORDER BY SEQUENCE# DESC;
+
+SELECT * FROM V$ARCHIVE_GAP;
+
+========How to Ensure Standby is Fully Synchronized:
+Check Last Received Log on Standby:
+----
+SELECT MAX(SEQUENCE#) FROM V$ARCHIVED_LOG WHERE APPLIED='YES';
+
+-This should match the latest archive log in the primary database.
+
+---Check Last Archive Log on Primary: 
+SELECT MAX(SEQUENCE#) FROM V$ARCHIVED_LOG;
+
+------*****=====
+
+SELECT arch.thread# "thread",
+         arch.sequence# "last sequence received",
+         appl.sequence# "last sequence applied",
+         (arch.sequence# - appl.sequence#) "difference"
+    FROM (SELECT thread#, sequence#
+            FROM v$archived_log
+           WHERE (thread#, first_time) IN (  SELECT thread#, MAX (first_time)
+                                               FROM v$archived_log
+                                           GROUP BY thread#)) arch,
+         (SELECT thread#, sequence#
+            FROM v$log_history
+           WHERE (thread#, first_time) IN (  SELECT thread#, MAX (first_time)
+                                               FROM v$log_history
+                                           GROUP BY thread#)) appl
+   WHERE arch.thread# = appl.thread#
+ORDER BY 1;
+
+
+
+
+----
+
+--The sequence# on the standby and primary should be the same or close (a slight delay is normal).
+
+----Check if Standby is Receiving Logs
+On the standby database (fooddrdb), run:
+---
+SELECT MAX(SEQUENCE#) FROM V$ARCHIVED_LOG WHERE APPLIED='YES'; 
+SELECT MAX(SEQUENCE#) FROM V$ARCHIVED_LOG WHERE APPLIED='NO';
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE USING CURRENT LOGFILE DISCONNECT;
+
+ALTER SYSTEM SWITCH LOGFILE;
+
+
+ 
+====== Start Data Guard Broker (DGMGRL)
+On the primary database:
+
+dgmgrl sys@fooddb
+
+Enable Data Guard Broker:
+----
+
+CREATE CONFIGURATION my_dg_config AS PRIMARY DATABASE IS fooddb CONNECT IDENTIFIER IS fooddb;
+ADD DATABASE fooddrdb AS CONNECT IDENTIFIER IS fooddrdb MAINTAINED AS PHYSICAL;
+ENABLE CONFIGURATION;
+ENABLE DATABASE fooddrdb;
+
+Verify status:
+---------
+SHOW CONFIGURATION;
+SHOW DATABASE VERBOSE fooddrdb;
+
+Start Log Apply Process on Standby:
+------
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+ALTER SYSTEM SWITCH LOGFILE;
+
+
+
+======= Catalog the Backup on Standby
+If you manually copied the backup, tell RMAN where to find it:
+-----
+RMAN> CATALOG START WITH '/u01/rmanbkp/';
+
+RMAN> LIST BACKUP;
+
+to confirm that RMAN recognizes the backup.
+
+RMAN> RESTORE DATABASE;
+RMAN> RECOVER DATABASE;
+
+After restore & recovery, start the standby in mount mode:
+--------
+SQL> ALTER DATABASE MOUNT STANDBY DATABASE;
+
+Then, start managed recovery:
+-----
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+------Restore Datafiles One by One:
+RESTORE DATAFILE 1;
+RESTORE DATAFILE 3;
+RESTORE DATAFILE 4;
+RESTORE DATAFILE 7;
+
+
+====== ERROR resolve: The error ORA-19502: write error on file and ORA-27072: 
+File I/O error suggests an issue with disk storage, permissions, or corruption. Here’s how you can troubleshoot and fix it:
+----- Check Disk I/O and Health:
+iostat -x 1 5
+dmesg | tail -50
+
+If you see disk errors, contact your system administrator.
+
+---- Check File System Health:
+For ext3/ext4 file systems, check for corruption:
+----
+fsck -n /dev/sdX
+
+---Try Restoring to a Different Disk:
+If the issue is with /u01/oradata/, try restoring to another location:
+----
+RUN {
+  SET NEWNAME FOR DATAFILE 15 TO '/new_mount/tbs_fsmms.dbf';
+  RESTORE DATABASE;
+}
+
+----Exclude Corrupted Files and Restore Others:
+If a specific datafile is corrupted, exclude it and continue restoring:
+--
+RESTORE DATABASE SKIP DATAFILE '/u01/oradata/tbs_fsmms.dbf';
+
+After restoring other files, recreate the missing tablespace later.
+
+==================
+
+Restore with Tablespace-by-Tablespace Approach
+Instead of restoring the entire database at once, restore one tablespace at a time:
+-----
+RMAN> RESTORE TABLESPACE users;
+RMAN> RESTORE TABLESPACE system;
+RMAN> RECOVER DATABASE;
+
+Move Datafiles to Another Disk (If Available)
+If another disk or partition has space, move the datafiles:
+------
+ALTER DATABASE MOVE DATAFILE '/u01/app/oracle/oradata/FOODDB/system01.dbf' 
+TO '/u02/oradata/fooddb/system01.dbf';
+
+-------------
+If no standby redo logs exist, add them (matching the primary log groups):
+
+Example:
+
+ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 4 ('/u01/oradata/fooddrdb/standby_redo04.log') SIZE 512M;
+ALTER DATABASE ADD STANDBY LOGFILE THREAD 1 GROUP 5 ('/u01/oradata/fooddrdb/standby_redo05.log') SIZE 512M;
+
+Then restart recovery:
+----
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+-------
+Restart the MRP (Managed Recovery Process)
+----------
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+
+------ The DEFERRED status for LOG_ARCHIVE_DEST_2 on the primary
+Re-enable Log Shipping
+On the primary (fooddb), run:
+---
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_STATE_2=ENABLE;
+
+--------Restart Log Shipping:
+On primary (fooddb), re-enable log shipping:
+----
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_STATE_2=ENABLE;
+---
+Then, manually force log archive shipping:
+--
+ALTER SYSTEM ARCHIVE LOG CURRENT;
+
+----Check Pending Recovery
+If OPEN_MODE is MOUNTED, check if there are any pending recovery operations:
+---
+SELECT * FROM V$RECOVER_FILE;
+----
+If any files are listed, you need to recover them:
+---
+RECOVER DATABASE;
+
+----
+ALTER DATABASE RENAME FILE '/u01/app/oracle/oradata/FOODDRDB/redo08.log' TO '/u01/app/oracle/oradata/FOODDB/redo08.log';
+
+---If logs are missing (sequence gap), manually fetch them from primary:
+---
+ALTER DATABASE REGISTER LOGFILE '/path/to/missing/log';
+
+
+---Verify Password Files
+Ensure both primary & standby use the same password file:
+
+---Your Data Guard setup is working properly!
+Logs are shipping from the primary (fooddb)
+Logs are being applied on the standby (fooddrdb)
+
+
+-------Find the PFILE location:
+--
+find $ORACLE_HOME -name init*.ora
+
+
+==================================
+
+------ correct:
+---on primary:
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=USE_DB_RECOVERY_FILE_DEST VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=fooddb' SCOPE=BOTH;
+
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=fooddrdb ASYNC VALID_FOR=(ONLINE_LOGFILES,PRIMARY_ROLE) DB_UNIQUE_NAME=fooddrdb' SCOPE=BOTH;
+
+---on standby:
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=/u01/app/oracle/recovery_area/ VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=fooddrdb' SCOPE=BOTH;
+
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=fooddb ASYNC VALID_FOR=(ONLINE_LOGFILES,STANDBY_ROLE) DB_UNIQUE_NAME=fooddb' SCOPE=BOTH;
