@@ -1,0 +1,82 @@
+
+======= Switchover
+
+Prerequisites:
+✔ Ensure log shipping is working (SELECT THREAD#, SEQUENCE#, APPLIED FROM V$ARCHIVED_LOG;)
+✔ Verify Redo Apply is active (SELECT PROCESS, STATUS FROM V$MANAGED_STANDBY;)
+✔ Verify Flashback is enabled (SELECT FLASHBACK_ON FROM V$DATABASE;)
+✔ Ensure connectivity is fine between primary & standby.
+
+Step 1: Verify Primary Readiness (Run on Primary):
+
+SELECT SWITCHOVER_STATUS FROM V$DATABASE;
+--
+Possible Outputs & Meaning:
+TO STANDBY → Primary is ready for switchover ✅
+
+Step 2: Switch Primary to Standby (Run on Primary):
+
+ALTER DATABASE COMMIT TO SWITCHOVER TO PHYSICAL STANDBY WITH SESSION SHUTDOWN;
+--
+This will convert the primary database into a standby database.
+
+Now shut down the primary and start it in standby mode:
+
+SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+
+Step 3: Activate Standby as New Primary (Run on Standby)
+On the standby, check readiness:
+
+SELECT SWITCHOVER_STATUS FROM V$DATABASE;
+--
+TO PRIMARY → Standby is ready to become primary ✅
+
+Now, switch the standby to primary:
+
+ALTER DATABASE COMMIT TO SWITCHOVER TO PRIMARY;
+
+Then, open the new primary database:
+
+ALTER DATABASE OPEN;
+
+Step 4: Start Redo Apply on the New Standby (Run on Old Primary)
+Go to the old primary (which is now standby) and start redo apply:
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+Step 5: Verify Data Guard After Switchover
+On the new primary, check if log shipping is working:
+
+SELECT THREAD#, SEQUENCE#, APPLIED FROM V$ARCHIVED_LOG ORDER BY SEQUENCE# DESC;
+
+On the new standby, check redo apply process:
+
+SELECT PROCESS, STATUS FROM V$MANAGED_STANDBY;
+
+
+***** Updated Configuration After Switchover
+
+On the New Primary (Old Standby):
+
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=USE_DB_RECOVERY_FILE_DEST VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=fooddrdb' SCOPE=BOTH;
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=fooddb ASYNC VALID_FOR=(ONLINE_LOGFILES,PRIMARY_ROLE) DB_UNIQUE_NAME=fooddb' SCOPE=BOTH;
+
+On the New Standby (Old Primary):
+
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_1='LOCATION=/u01/app/oracle/recovery_area/ VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=fooddb' SCOPE=BOTH;
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_2='SERVICE=fooddrdb ASYNC VALID_FOR=(ONLINE_LOGFILES,STANDBY_ROLE) DB_UNIQUE_NAME=fooddrdb' SCOPE=BOTH;
+
+
+Restart the log apply process on the new standby:
+
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE CANCEL;
+alter database open;
+ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
+
+Then, check if logs are being shipped and applied correctly:
+
+SELECT DEST_ID, STATUS, ERROR FROM V$ARCHIVE_DEST WHERE DEST_ID=2;
+SELECT PROCESS, STATUS, THREAD#, SEQUENCE# FROM V$MANAGED_STANDBY;
+select open_mode,database_role from v$database;
+
