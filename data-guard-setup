@@ -352,6 +352,10 @@ ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
 ALTER SYSTEM SWITCH LOGFILE;
 
 
+=============================================================================================================
+==============================================================
+*************************************************
+
 
 ======= Catalog the Backup on Standby
 If you manually copied the backup, tell RMAN where to find it:
