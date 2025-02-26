@@ -59,6 +59,13 @@ ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo
 ALTER DATABASE ADD STANDBY LOGFILE GROUP 5 ('/u01/app/oracle/oradata/fooddb/redo07.log') SIZE 256M;
 ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo08.log') SIZE 256M;
 
+Run the same command on Standby:
+
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo04.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 5 ('/u01/app/oracle/oradata/fooddb/redo05.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo06.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 5 ('/u01/app/oracle/oradata/fooddb/redo07.log') SIZE 256M;
+ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo08.log') SIZE 256M;
 
 Restart the primary database:
 ------
