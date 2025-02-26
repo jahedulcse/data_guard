@@ -45,6 +45,12 @@ ALTER SYSTEM SET STANDBY_FILE_MANAGEMENT=AUTO SCOPE=BOTH;
 ALTER SYSTEM SET REMOTE_LOGIN_PASSWORDFILE=EXCLUSIVE SCOPE=SPFILE;
 
 1.3 Create Standby Redo Logs (SRLs) 
+1.3 Create Standby Redo Logs (SRLs) 
+Check Online Redo Logs on Primary
+Run this on Primary:
+
+SELECT GROUP#, THREAD#, SEQUENCE#, BYTES/1024/1024 AS SIZE_MB, STATUS FROM V$LOG ORDER BY THREAD#, GROUP#;
+
 On the primary, create one more SRL group than online redo logs:
 -------
 ALTER DATABASE ADD STANDBY LOGFILE GROUP 4 ('/u01/app/oracle/oradata/fooddb/redo04.log') SIZE 256M;
